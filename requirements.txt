@@ -1,0 +1,7 @@
+streamlit
+kokoro
+soundfile
+pypdf
+python-docx
+numpy
+torch
