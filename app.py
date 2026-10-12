@@ -1,19 +1,20 @@
-import io
+import asyncio
 import os
-import numpy as np
-import soundfile as sf
+import edge_tts
 import streamlit as st
 from pypdf import PdfReader
 from docx import Document
-from kokoro import KPipeline
 
 st.set_page_config(page_title="Document Voice Studio", page_icon="🎙️", layout="wide")
 
-@st.cache_resource
-def load_tts_pipeline():
-    return KPipeline(lang_code='a')
-
-pipeline = load_tts_pipeline()
+VOICES = {
+    "US English - Ava (Female)": "en-US-AvaNeural",
+    "US English - Andrew (Male)": "en-US-AndrewNeural",
+    "US English - Emma (Female)": "en-US-EmmaNeural",
+    "US English - Brian (Male)": "en-US-BrianNeural",
+    "UK English - Sonia (Female)": "en-GB-SoniaNeural",
+    "UK English - Ryan (Male)": "en-GB-RyanNeural",
+}
 
 def extract_text_from_file(uploaded_file):
     ext = os.path.splitext(uploaded_file.name)[1].lower()
@@ -32,21 +33,16 @@ def extract_text_from_file(uploaded_file):
             text += p.text + "\n"
     return text
 
-def text_to_audio_bytes(text, voice, speed):
-    generator = pipeline(text, voice=voice, speed=speed, split_pattern=r'\n+')
-    audio_segments = []
-    for _, _, audio in generator:
-        audio_segments.append(audio)
-    if not audio_segments:
-        return None
-    full_audio = np.concatenate(audio_segments)
-    buffer = io.BytesIO()
-    sf.write(buffer, full_audio, 24000, format='WAV')
-    buffer.seek(0)
-    return buffer
+async def generate_speech_bytes(text, voice_id, rate_str):
+    communicate = edge_tts.Communicate(text, voice_id, rate=rate_str)
+    buffer = bytearray()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            buffer.extend(chunk["data"])
+    return bytes(buffer)
 
 st.title("🎙️ Open-Source Document Reader")
-st.caption("Convert PDFs, Word files, or raw text into natural audio recordings online.")
+st.caption("Lightweight & Fast Document-to-Speech Converter")
 
 col1, col2 = st.columns([1, 1], gap="large")
 
@@ -56,12 +52,12 @@ with col1:
     raw_text_input = st.text_area("Or paste text directly", height=150, placeholder="Paste text here...")
 
     st.subheader("2. Voice Settings")
-    voice_option = st.selectbox(
-        "Select Voice Persona",
-        options=["af_heart", "af_bella", "af_sarah", "am_adam", "am_michael", "bf_emma", "bm_george"],
-        index=0
-    )
-    speed_option = st.slider("Playback Speed", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
+    selected_voice_label = st.selectbox("Select Voice Persona", options=list(VOICES.keys()), index=0)
+    speed = st.slider("Playback Speed", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
+    
+    rate_percentage = int((speed - 1.0) * 100)
+    rate_str = f"{'+' if rate_percentage >= 0 else ''}{rate_percentage}%"
+
     generate_btn = st.button("✨ Generate Recording", type="primary", use_container_width=True)
 
 with col2:
@@ -79,18 +75,20 @@ with col2:
             word_count = len(final_text.split())
             with st.spinner(f"Converting {word_count} words to speech..."):
                 try:
-                    audio_buffer = text_to_audio_bytes(final_text, voice_option, speed_option)
-                    if audio_buffer:
+                    voice_id = VOICES[selected_voice_label]
+                    audio_bytes = asyncio.run(generate_speech_bytes(final_text, voice_id, rate_str))
+                    
+                    if audio_bytes:
                         st.success(f"Successfully processed {word_count} words!")
-                        st.audio(audio_buffer, format="audio/wav")
+                        st.audio(audio_bytes, format="audio/mp3")
                         st.download_button(
-                            label="📥 Download WAV File",
-                            data=audio_buffer,
-                            file_name="document_recording.wav",
-                            mime="audio/wav",
+                            label="📥 Download MP3 File",
+                            data=audio_bytes,
+                            file_name="document_recording.mp3",
+                            mime="audio/mp3",
                             use_container_width=True
                         )
                     else:
-                        st.error("Failed to generate audio. Please check your text input.")
+                        st.error("Failed to generate audio.")
                 except Exception as e:
                     st.error(f"An error occurred: {str(e)}")
