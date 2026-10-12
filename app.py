@@ -1,6 +1,8 @@
 import asyncio
+import io
 import os
 import edge_tts
+from gtts import gTTS
 import streamlit as st
 from pypdf import PdfReader
 from docx import Document
@@ -11,7 +13,6 @@ VOICES = {
     "US English - Ava (Female)": "en-US-AvaNeural",
     "US English - Andrew (Male)": "en-US-AndrewNeural",
     "US English - Emma (Female)": "en-US-EmmaNeural",
-    "US English - Brian (Male)": "en-US-BrianNeural",
     "UK English - Sonia (Female)": "en-GB-SoniaNeural",
     "UK English - Ryan (Male)": "en-GB-RyanNeural",
 }
@@ -33,7 +34,7 @@ def extract_text_from_file(uploaded_file):
             text += p.text + "\n"
     return text
 
-async def generate_speech_bytes(text, voice_id, rate_str):
+async def generate_edge_tts(text, voice_id, rate_str):
     communicate = edge_tts.Communicate(text, voice_id, rate=rate_str)
     buffer = bytearray()
     async for chunk in communicate.stream():
@@ -41,8 +42,15 @@ async def generate_speech_bytes(text, voice_id, rate_str):
             buffer.extend(chunk["data"])
     return bytes(buffer)
 
+def generate_gtts_fallback(text):
+    tts = gTTS(text=text, lang='en')
+    buffer = io.BytesIO()
+    tts.write_to_fp(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 st.title("🎙️ Open-Source Document Reader")
-st.caption("Lightweight & Fast Document-to-Speech Converter")
+st.caption("Lightweight Document-to-Speech Converter")
 
 col1, col2 = st.columns([1, 1], gap="large")
 
@@ -74,21 +82,28 @@ with col2:
         else:
             word_count = len(final_text.split())
             with st.spinner(f"Converting {word_count} words to speech..."):
+                audio_bytes = None
+                
+                # Primary Attempt: Edge-TTS
                 try:
                     voice_id = VOICES[selected_voice_label]
-                    audio_bytes = asyncio.run(generate_speech_bytes(final_text, voice_id, rate_str))
-                    
-                    if audio_bytes:
-                        st.success(f"Successfully processed {word_count} words!")
-                        st.audio(audio_bytes, format="audio/mp3")
-                        st.download_button(
-                            label="📥 Download MP3 File",
-                            data=audio_bytes,
-                            file_name="document_recording.mp3",
-                            mime="audio/mp3",
-                            use_container_width=True
-                        )
-                    else:
-                        st.error("Failed to generate audio.")
+                    audio_bytes = asyncio.run(generate_edge_tts(final_text, voice_id, rate_str))
                 except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+                    st.warning("Primary speech server returned a 403 block. Switching to fallback TTS engine...")
+                    
+                    # Secondary Attempt: Google TTS Fallback
+                    try:
+                        audio_bytes = generate_gtts_fallback(final_text)
+                    except Exception as fallback_err:
+                        st.error(f"Speech generation failed: {str(fallback_err)}")
+
+                if audio_bytes:
+                    st.success(f"Successfully processed {word_count} words!")
+                    st.audio(audio_bytes, format="audio/mp3")
+                    st.download_button(
+                        label="📥 Download MP3 File",
+                        data=audio_bytes,
+                        file_name="document_recording.mp3",
+                        mime="audio/mp3",
+                        use_container_width=True
+                    )
