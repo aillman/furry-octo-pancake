@@ -1,7 +1,4 @@
 streamlit
-kokoro
-soundfile
+edge-tts
 pypdf
 python-docx
-numpy
-torch
