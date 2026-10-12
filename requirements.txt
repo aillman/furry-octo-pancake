@@ -1,5 +1,6 @@
 streamlit
-edge-tts>=7.0.0
-gTTS
+kokoro-onnx
+soundfile
 pypdf
 python-docx
+numpy
