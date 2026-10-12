@@ -1,21 +1,28 @@
-import asyncio
-import io
 import os
-import edge_tts
-from gtts import gTTS
+import urllib.request
+import soundfile as sf
 import streamlit as st
 from pypdf import PdfReader
 from docx import Document
 
 st.set_page_config(page_title="Document Voice Studio", page_icon="🎙️", layout="wide")
 
-VOICES = {
-    "US English - Ava (Female)": "en-US-AvaNeural",
-    "US English - Andrew (Male)": "en-US-AndrewNeural",
-    "US English - Emma (Female)": "en-US-EmmaNeural",
-    "UK English - Sonia (Female)": "en-GB-SoniaNeural",
-    "UK English - Ryan (Male)": "en-GB-RyanNeural",
-}
+MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx"
+VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin"
+
+@st.cache_resource
+def load_kokoro_engine():
+    """Downloads weights once and caches the engine in memory."""
+    if not os.path.exists("kokoro-v1.0.onnx"):
+        with st.spinner("Initializing neural speech engine (one-time setup)..."):
+            urllib.request.urlretrieve(MODEL_URL, "kokoro-v1.0.onnx")
+            
+    if not os.path.exists("voices-v1.0.bin"):
+        with st.spinner("Loading natural voice models..."):
+            urllib.request.urlretrieve(VOICES_URL, "voices-v1.0.bin")
+            
+    from kokoro_onnx import Kokoro
+    return Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
 def extract_text_from_file(uploaded_file):
     ext = os.path.splitext(uploaded_file.name)[1].lower()
@@ -34,42 +41,37 @@ def extract_text_from_file(uploaded_file):
             text += p.text + "\n"
     return text
 
-async def generate_edge_tts(text, voice_id, rate_str):
-    communicate = edge_tts.Communicate(text, voice_id, rate=rate_str)
-    buffer = bytearray()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            buffer.extend(chunk["data"])
-    return bytes(buffer)
-
-def generate_gtts_fallback(text):
-    tts = gTTS(text=text, lang='en')
-    buffer = io.BytesIO()
-    tts.write_to_fp(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
-
+# App UI
 st.title("🎙️ Open-Source Document Reader")
-st.caption("Lightweight Document-to-Speech Converter")
+st.caption("100% Free, Local Neural Text-to-Speech Running on Streamlit Cloud")
+
+kokoro = load_kokoro_engine()
+
+VOICE_OPTIONS = {
+    "US Female - Sarah": "af_sarah",
+    "US Female - Heart": "af_heart",
+    "US Female - Bella": "af_bella",
+    "US Male - Adam": "am_adam",
+    "US Male - Michael": "am_michael",
+    "UK Female - Emma": "bf_emma",
+    "UK Male - George": "bm_george",
+}
 
 col1, col2 = st.columns([1, 1], gap="large")
 
 with col1:
-    st.subheader("1. Input Document or Text")
-    uploaded_file = st.file_uploader("Upload a document", type=["pdf", "docx", "txt"])
+    st.subheader("1. Input Document")
+    uploaded_file = st.file_uploader("Upload PDF, Word, or TXT", type=["pdf", "docx", "txt"])
     raw_text_input = st.text_area("Or paste text directly", height=150, placeholder="Paste text here...")
 
     st.subheader("2. Voice Settings")
-    selected_voice_label = st.selectbox("Select Voice Persona", options=list(VOICES.keys()), index=0)
-    speed = st.slider("Playback Speed", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
-    
-    rate_percentage = int((speed - 1.0) * 100)
-    rate_str = f"{'+' if rate_percentage >= 0 else ''}{rate_percentage}%"
+    voice_label = st.selectbox("Select Voice Persona", options=list(VOICE_OPTIONS.keys()), index=0)
+    speed_option = st.slider("Playback Speed", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
 
     generate_btn = st.button("✨ Generate Recording", type="primary", use_container_width=True)
 
 with col2:
-    st.subheader("3. Output Audio")
+    st.subheader("3. Audio Output")
     if generate_btn:
         final_text = ""
         if uploaded_file is not None:
@@ -81,29 +83,32 @@ with col2:
             st.error("Please upload a file or enter text before generating audio.")
         else:
             word_count = len(final_text.split())
-            with st.spinner(f"Converting {word_count} words to speech..."):
-                audio_bytes = None
-                
-                # Primary Attempt: Edge-TTS
+            with st.spinner(f"Synthesizing {word_count} words..."):
                 try:
-                    voice_id = VOICES[selected_voice_label]
-                    audio_bytes = asyncio.run(generate_edge_tts(final_text, voice_id, rate_str))
-                except Exception as e:
-                    st.warning("Primary speech server returned a 403 block. Switching to fallback TTS engine...")
+                    voice_code = VOICE_OPTIONS[voice_label]
                     
-                    # Secondary Attempt: Google TTS Fallback
-                    try:
-                        audio_bytes = generate_gtts_fallback(final_text)
-                    except Exception as fallback_err:
-                        st.error(f"Speech generation failed: {str(fallback_err)}")
+                    # Generate speech audio directly
+                    samples, sample_rate = kokoro.create(
+                        final_text, 
+                        voice=voice_code, 
+                        speed=speed_option, 
+                        lang="en-us"
+                    )
+                    
+                    output_file = "recording.wav"
+                    sf.write(output_file, samples, sample_rate)
+                    
+                    with open(output_file, "rb") as f:
+                        audio_data = f.read()
 
-                if audio_bytes:
-                    st.success(f"Successfully processed {word_count} words!")
-                    st.audio(audio_bytes, format="audio/mp3")
+                    st.success(f"Successfully converted {word_count} words!")
+                    st.audio(audio_data, format="audio/wav")
                     st.download_button(
-                        label="📥 Download MP3 File",
-                        data=audio_bytes,
-                        file_name="document_recording.mp3",
-                        mime="audio/mp3",
+                        label="📥 Download Audio File (WAV)",
+                        data=audio_data,
+                        file_name="document_recording.wav",
+                        mime="audio/wav",
                         use_container_width=True
                     )
+                except Exception as e:
+                    st.error(f"Speech synthesis error: {str(e)}")
